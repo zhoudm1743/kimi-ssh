@@ -3,7 +3,7 @@ GO?=go
 
 DIST_DIR?=dist
 PLATFORMS=linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64
-DIST_LDFLAGS=-trimpath -ldflags="-s -w"
+DIST_LDFLAGS=-trimpath -ldflags="-s -w -X github.com/zhoudm1743/kimi-ssh/internal/mcp.version=${DIST_VERSION}"
 
 # UPX is applied only where it is both supported and verifiable: UPX refuses to
 # pack macOS binaries (forcing it would break the code signature macOS requires),

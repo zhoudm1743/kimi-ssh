@@ -1,9 +1,7 @@
 package ssh
 
 import (
-	"bytes"
 	"fmt"
-	"io"
 	"os"
 	"sort"
 	"sync"
@@ -18,6 +16,9 @@ const (
 	// handshakeLimit also bounds the SSH handshake over a ProxyCommand, which
 	// ClientConfig.Timeout alone does not cover.
 	handshakeLimit = 30 * time.Second
+	// keepaliveDefault is how often an idle connection is pinged when the host
+	// block does not set ServerAliveInterval.
+	keepaliveDefault = 30 * time.Second
 )
 
 // Connection is one open SSH client together with the settings it was opened
@@ -26,14 +27,54 @@ type Connection struct {
 	client *ssh.Client
 	config *SSHConfig
 	active bool
+
+	stopKeepalive chan struct{}
+	stopOnce      sync.Once
 }
 
-// close shuts the client down and marks the entry unusable.
+// close shuts the client down and marks the entry unusable. The keepalive
+// goroutine, if any, is told to stop before the client it pings goes away.
 func (c *Connection) close() {
+	if c.stopKeepalive != nil {
+		c.stopOnce.Do(func() { close(c.stopKeepalive) })
+	}
 	if c.client != nil {
 		_ = c.client.Close()
 	}
 	c.active = false
+}
+
+// startKeepalive pings the server so a connection left idle between tool calls
+// is not dropped by a NAT or a firewall. The loop ends when the connection is
+// closed or the server stops answering.
+func (c *Connection) startKeepalive() {
+	interval := keepaliveDefault
+	if c.config != nil && c.config.ServerAliveInterval >= 0 {
+		interval = time.Duration(c.config.ServerAliveInterval) * time.Second
+	}
+	if interval <= 0 {
+		// ServerAliveInterval 0 turns keepalives off, as it does in OpenSSH.
+		return
+	}
+
+	stop := make(chan struct{})
+	c.stopKeepalive = stop
+
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				if _, _, err := c.client.SendRequest("keepalive@openssh.com", true, nil); err != nil {
+					return
+				}
+			}
+		}
+	}()
 }
 
 // ConnectionManager owns the live connections and the host settings they are
@@ -90,11 +131,15 @@ func (cm *ConnectionManager) Connect(host string) error {
 		return nil
 	}
 
-	cm.connections[host] = &Connection{
+	connection := &Connection{
 		client: client,
 		config: config,
 		active: true,
 	}
+	// Start the keepalive before publishing the connection, so no other call
+	// can close it while the goroutine is being armed.
+	connection.startKeepalive()
+	cm.connections[host] = connection
 	return nil
 }
 
@@ -113,54 +158,6 @@ func (cm *ConnectionManager) Disconnect(host string) error {
 
 	conn.close()
 	return nil
-}
-
-// Execute runs one command on the alias's connection. Output written to stdout
-// and stderr is returned even when the command exits non-zero, in which case the
-// wait error describes the exit status.
-func (cm *ConnectionManager) Execute(host, command string) (string, string, error) {
-	conn, err := cm.connection(host)
-	if err != nil {
-		return "", "", err
-	}
-
-	remote, err := conn.client.NewSession()
-	if err != nil {
-		return "", "", fmt.Errorf("failed to create SSH session: %w", err)
-	}
-	defer remote.Close()
-
-	stdout, err := remote.StdoutPipe()
-	if err != nil {
-		return "", "", fmt.Errorf("failed to create stdout pipe: %w", err)
-	}
-	stderr, err := remote.StderrPipe()
-	if err != nil {
-		return "", "", fmt.Errorf("failed to create stderr pipe: %w", err)
-	}
-
-	if err := remote.Start(command); err != nil {
-		return "", "", fmt.Errorf("failed to start command: %w", err)
-	}
-
-	// Drain both pipes while the command runs; a command that fills a pipe
-	// buffer would otherwise stall waiting for a reader.
-	var out, errOut bytes.Buffer
-	var drains sync.WaitGroup
-	drains.Add(2)
-	go func() {
-		defer drains.Done()
-		_, _ = io.Copy(&out, stdout)
-	}()
-	go func() {
-		defer drains.Done()
-		_, _ = io.Copy(&errOut, stderr)
-	}()
-
-	waitErr := remote.Wait()
-	drains.Wait()
-
-	return out.String(), errOut.String(), waitErr
 }
 
 // GetActiveConnections lists the aliases that are connected, sorted so callers
@@ -198,6 +195,12 @@ func (cm *ConnectionManager) configFor(host string) (*SSHConfig, bool) {
 
 	config, known := cm.configs[host]
 	return config, known
+}
+
+// IsConnected reports whether the host still holds a live connection. Callers
+// outside this package use it to avoid advertising a host that has gone away.
+func (cm *ConnectionManager) IsConnected(host string) bool {
+	return cm.isActive(host)
 }
 
 func (cm *ConnectionManager) isActive(host string) bool {
@@ -268,8 +271,10 @@ func resolveTarget(config *SSHConfig) endpoint {
 }
 
 // clientSettingsFor assembles the client settings: the host's identity file when
-// one is configured, the running ssh-agent on top of it, and host key
-// verification against known_hosts.
+// one is configured, the running ssh-agent on top of it, the default key files,
+// a password if one is configured, and host key verification against
+// known_hosts. Keys come before the password so a host that trusts a key is
+// never sent a secret it does not need.
 func clientSettingsFor(config *SSHConfig, user string) (*ssh.ClientConfig, error) {
 	var auth []ssh.AuthMethod
 
@@ -284,6 +289,9 @@ func clientSettingsFor(config *SSHConfig, user string) (*ssh.ClientConfig, error
 	if agent := agentAuthMethod(); agent != nil {
 		auth = append(auth, agent)
 	}
+
+	auth = append(auth, identityAuthMethods()...)
+	auth = append(auth, passwordAuthMethods(user, config.Host)...)
 
 	verifyHostKey, err := hostKeyCallback()
 	if err != nil {

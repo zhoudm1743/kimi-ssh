@@ -18,6 +18,12 @@ const (
 	codeMethodNotFound = -32601
 )
 
+// version is the server version reported during initialize. Release builds
+// overwrite it with
+// -X github.com/zhoudm1743/kimi-ssh/internal/mcp.version=$(DIST_VERSION), so an
+// artifact always agrees with the tag it was built from.
+var version = "1.3.0"
+
 // Request is a JSON-RPC 2.0 request. A notification carries no id and must not
 // be answered.
 type Request struct {
@@ -56,7 +62,21 @@ type toolSpec struct {
 	description string
 	properties  map[string]interface{}
 	required    []string
-	run         func(*Server, json.RawMessage) ([]string, error)
+	run         func(*Server, json.RawMessage) (toolResult, error)
+}
+
+// toolResult is what a tool hands back: the text blocks to show, and whether
+// the tool considers the call to have failed. A failure that still has output
+// worth showing - a command that exited non-zero - reports it here rather than
+// as an error, which would replace the output with nothing but a message.
+type toolResult struct {
+	texts   []string
+	isError bool
+}
+
+// ok is a successful result carrying the given text blocks.
+func ok(texts ...string) toolResult {
+	return toolResult{texts: texts}
 }
 
 // inputSchema renders the spec as the JSON Schema a client expects. Tools that
@@ -153,7 +173,7 @@ func (s *Server) handleInitialize(req Request) *Response {
 		},
 		"serverInfo": map[string]interface{}{
 			"name":    "kimi-ssh",
-			"version": "1.2.2",
+			"version": version,
 		},
 	})
 }
@@ -188,11 +208,11 @@ func (s *Server) handleCallTool(req Request) *Response {
 			continue
 		}
 
-		texts, err := spec.run(s, call.Arguments)
+		result, err := spec.run(s, call.Arguments)
 		if err != nil {
 			return success(req.ID, content([]string{err.Error()}, true))
 		}
-		return success(req.ID, content(texts, false))
+		return success(req.ID, content(result.texts, result.isError))
 	}
 
 	return failure(req.ID, codeMethodNotFound, fmt.Sprintf("Unknown tool: %s", call.Name))
@@ -242,77 +262,105 @@ func toolSpecs() []toolSpec {
 }
 
 // listHosts reports every alias parsed from the SSH config.
-func (s *Server) listHosts(json.RawMessage) ([]string, error) {
-	configs := s.configParser.GetAllConfigs()
+func (s *Server) listHosts(json.RawMessage) (toolResult, error) {
+	configs := s.configParser.OrderedConfigs()
 
 	hosts := make([]map[string]string, 0, len(configs))
-	for alias, config := range configs {
+	for _, config := range configs {
 		hosts = append(hosts, map[string]string{
-			"host":     alias,
+			"host":     config.Host,
 			"hostname": config.HostName,
 			"port":     config.Port,
 			"user":     config.User,
 		})
 	}
 
-	return []string{
+	return ok(
 		fmt.Sprintf("Found %d SSH hosts in config", len(hosts)),
 		formatHosts(hosts),
-	}, nil
+	), nil
 }
 
 // connectHost opens a session and leaves it active for later ssh_exec calls.
-func (s *Server) connectHost(arguments json.RawMessage) ([]string, error) {
+func (s *Server) connectHost(arguments json.RawMessage) (toolResult, error) {
 	var args struct {
 		Host string `json:"host"`
 	}
 	if err := decode(arguments, &args); err != nil {
-		return nil, errors.New("Invalid parameters for ssh_connect")
+		return toolResult{}, errors.New("Invalid parameters for ssh_connect")
 	}
 	if args.Host == "" {
-		return nil, errors.New("Host parameter is required")
+		return toolResult{}, errors.New("Host parameter is required")
 	}
 
 	if err := s.sessionManager.Connect(args.Host); err != nil {
-		return nil, err
+		return toolResult{}, err
 	}
 
-	return []string{fmt.Sprintf("Successfully connected to %s", args.Host)}, nil
+	return ok(fmt.Sprintf("Successfully connected to %s", args.Host)), nil
 }
 
 // execCommand runs a command on the named host, or on the active one when the
-// argument is empty. Output and a non-zero exit status are all reported as
-// content; only a failure to run anything at all becomes an error.
-func (s *Server) execCommand(arguments json.RawMessage) ([]string, error) {
+// argument is empty. Output, a non-zero exit status and a timeout are all
+// reported as content, with isError set so the client shows the call as failed;
+// only a failure to run anything at all becomes an error.
+func (s *Server) execCommand(arguments json.RawMessage) (toolResult, error) {
 	var args struct {
 		Command string `json:"command"`
 		Host    string `json:"host"`
 	}
 	if err := decode(arguments, &args); err != nil {
-		return nil, errors.New("Invalid parameters for ssh_exec")
+		return toolResult{}, errors.New("Invalid parameters for ssh_exec")
 	}
 	if args.Command == "" {
-		return nil, errors.New("Command parameter is required")
+		return toolResult{}, errors.New("Command parameter is required")
 	}
 
-	stdout, stderr, runErr := s.sessionManager.Execute(args.Command, args.Host)
+	outcome, err := s.sessionManager.Execute(args.Command, args.Host)
+	if err != nil {
+		return toolResult{}, err
+	}
 
 	texts := []string{fmt.Sprintf("Executed command: %s", args.Command)}
-	if stderr != "" {
-		texts = append(texts, "STDERR:\n"+stderr)
+	if outcome.TimedOut {
+		if outcome.RemoteKilled {
+			texts = append(texts, fmt.Sprintf("ERROR: command exceeded %s and was force-terminated on the remote host: the remote `timeout` killed its whole process group, so child processes went with it (%s overrides the timeout)",
+				outcome.Timeout, ssh.ExecTimeoutEnv))
+		} else {
+			texts = append(texts, fmt.Sprintf("ERROR: command timed out after %s and was stopped (%s overrides the timeout)",
+				outcome.Timeout, ssh.ExecTimeoutEnv))
+		}
+		if outcome.ConnectionClosed {
+			texts = append(texts, fmt.Sprintf("ERROR: the SSH connection to %s was closed with the stuck session; connect again before running more commands", outcome.Host))
+		}
 	}
-	if stdout != "" {
-		texts = append(texts, "STDOUT:\n"+stdout)
+	if outcome.NoRemoteTimeout {
+		texts = append(texts, "WARNING: the remote host has no `timeout` command, so the command was re-run without remote enforcement; a command that outlives the deadline may keep running on the server")
 	}
-	if runErr != nil {
-		texts = append(texts, fmt.Sprintf("ERROR: %v", runErr))
+	if outcome.Stderr != "" {
+		texts = append(texts, "STDERR:\n"+outcome.Stderr)
+	}
+	if outcome.Stdout != "" {
+		texts = append(texts, "STDOUT:\n"+outcome.Stdout)
+	}
+	if outcome.StderrTruncated() {
+		texts = append(texts, fmt.Sprintf("STDERR truncated: kept the first %d bytes (已截断，原始长度 %d 字节)",
+			len(outcome.Stderr), outcome.StderrBytes))
+	}
+	if outcome.StdoutTruncated() {
+		texts = append(texts, fmt.Sprintf("STDOUT truncated: kept the first %d bytes (已截断，原始长度 %d 字节)",
+			len(outcome.Stdout), outcome.StdoutBytes))
+	}
+	if !outcome.TimedOut && outcome.ExitCode >= 0 {
+		texts = append(texts, fmt.Sprintf("EXIT: %d", outcome.ExitCode))
 	}
 
-	return texts, nil
+	failed := outcome.TimedOut || outcome.ExitCode != 0
+	return toolResult{texts: texts, isError: failed}, nil
 }
 
 // status summarizes what is connected right now.
-func (s *Server) status(json.RawMessage) ([]string, error) {
+func (s *Server) status(json.RawMessage) (toolResult, error) {
 	active := s.sessionManager.ListActiveConnections()
 
 	texts := []string{fmt.Sprintf("Active connections: %d", len(active))}
@@ -325,30 +373,30 @@ func (s *Server) status(json.RawMessage) ([]string, error) {
 		texts = append(texts, "No active host selected")
 	}
 
-	return texts, nil
+	return ok(texts...), nil
 }
 
 // disconnectHost closes a session, defaulting to the active host.
-func (s *Server) disconnectHost(arguments json.RawMessage) ([]string, error) {
+func (s *Server) disconnectHost(arguments json.RawMessage) (toolResult, error) {
 	var args struct {
 		Host string `json:"host"`
 	}
 	if err := decode(arguments, &args); err != nil {
-		return nil, errors.New("Invalid parameters for ssh_disconnect")
+		return toolResult{}, errors.New("Invalid parameters for ssh_disconnect")
 	}
 
 	host := args.Host
 	if host == "" {
 		if host = s.sessionManager.GetActiveHost(); host == "" {
-			return nil, errors.New("No active host to disconnect from")
+			return toolResult{}, errors.New("No active host to disconnect from")
 		}
 	}
 
 	if err := s.sessionManager.Disconnect(host); err != nil {
-		return nil, err
+		return toolResult{}, err
 	}
 
-	return []string{fmt.Sprintf("Disconnected from %s", host)}, nil
+	return ok(fmt.Sprintf("Disconnected from %s", host)), nil
 }
 
 // content builds a tools/call result from text blocks, marking it as an error

@@ -68,13 +68,13 @@ func (sm *SessionManager) Disconnect(host string) error {
 
 // Execute runs a command against the named host; an empty host means the active
 // one.
-func (sm *SessionManager) Execute(command, host string) (string, string, error) {
+func (sm *SessionManager) Execute(command, host string) (*ssh.Outcome, error) {
 	target := host
 	if target == "" {
 		target = sm.GetActiveHost()
 	}
 	if target == "" {
-		return "", "", ErrNoActiveHost
+		return nil, ErrNoActiveHost
 	}
 
 	return sm.connections.Execute(target, command)
@@ -90,11 +90,25 @@ func (sm *SessionManager) GetActiveConnections() []string {
 	return sm.ListActiveConnections()
 }
 
-// GetActiveHost returns the host commands run against by default.
+// GetActiveHost returns the host commands run against by default. A host whose
+// connection has gone away is replaced by another live one, or forgotten, so
+// status output cannot claim a connection that no longer exists.
 func (sm *SessionManager) GetActiveHost() string {
 	sm.mu.RLock()
-	defer sm.mu.RUnlock()
-	return sm.activeHost
+	host := sm.activeHost
+	sm.mu.RUnlock()
+
+	if host == "" || sm.connections.IsConnected(host) {
+		return host
+	}
+
+	sm.mu.Lock()
+	if sm.activeHost == host {
+		sm.activeHost = pickActive(sm.connections.GetActiveConnections())
+	}
+	host = sm.activeHost
+	sm.mu.Unlock()
+	return host
 }
 
 // pickActive chooses the replacement active host. Hosts are sorted first so
