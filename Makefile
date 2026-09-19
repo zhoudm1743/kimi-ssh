@@ -5,6 +5,13 @@ DIST_DIR?=dist
 PLATFORMS=linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64
 DIST_LDFLAGS=-trimpath -ldflags="-s -w"
 
+# UPX is applied only where it is both supported and verifiable: UPX refuses to
+# pack macOS binaries (forcing it would break the code signature macOS requires),
+# and packed Windows executables are a common antivirus false positive. Extend or
+# clear UPX_PLATFORMS to change that; a missing upx leaves the files as built.
+UPX?=upx
+UPX_PLATFORMS?=linux/amd64 linux/arm64
+
 LDFLAGS=-ldflags="-s -w"
 
 # Release version taken from the closest tag; the v prefix is dropped so the
@@ -46,6 +53,17 @@ dist:
 		output="${DIST_DIR}/${BINARY_NAME}_${DIST_VERSION}_$${os}_$${arch}$${suffix}"; \
 		echo "${GO} build -> $$output"; \
 		GOOS=$$os GOARCH=$$arch CGO_ENABLED=0 ${GO} build ${DIST_LDFLAGS} -o "$$output" .; \
+		case " ${UPX_PLATFORMS} " in \
+			*" $$platform "*) \
+				if command -v ${UPX} >/dev/null 2>&1; then \
+					${UPX} --best -q "$$output"; \
+					echo "  upx --best -> $$output"; \
+				else \
+					echo "  ${UPX} not installed, shipping unpacked: $$output"; \
+				fi ;; \
+			*) \
+				echo "  upx skipped for $$platform" ;; \
+		esac; \
 	done
 
 checksums: dist

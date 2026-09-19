@@ -23,18 +23,23 @@
 
 ```sh
 # 以 linux/amd64 为例
-curl -LO https://github.com/zhoudm1743/kimi-ssh/releases/latest/download/kimi-ssh_1.2.1_linux_amd64
-chmod +x kimi-ssh_1.2.1_linux_amd64
-mv kimi-ssh_1.2.1_linux_amd64 ~/.local/bin/kimi-ssh
+curl -LO https://github.com/zhoudm1743/kimi-ssh/releases/latest/download/kimi-ssh_1.2.2_linux_amd64
+chmod +x kimi-ssh_1.2.2_linux_amd64
+mv kimi-ssh_1.2.2_linux_amd64 ~/.local/bin/kimi-ssh
 ```
 
 提供 `linux/amd64`、`linux/arm64`、`darwin/amd64`、`darwin/arm64`、`windows/amd64`，
 每个 release 都带 `checksums.txt`，可用 `sha256sum -c checksums.txt` 校验。
 
+Linux 产物经 UPX 压缩（约 2 MB，未压缩约 5.5 MB）。代价是启动多几毫秒解压开销，
+且 `go version -m`、`govulncheck` 之类工具无法再从二进制读出 Go 构建信息。
+macOS 产物未压缩（UPX 不支持打包 Mach-O，强压会破坏 macOS 要求的代码签名），
+Windows 产物也未压缩。
+
 ### 用 Go 安装
 
 ```sh
-go install github.com/zhoudm1743/kimi-ssh@v1.2.1
+go install github.com/zhoudm1743/kimi-ssh@v1.2.2
 ```
 
 ### 从源码构建

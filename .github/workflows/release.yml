@@ -26,11 +26,23 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Install UPX
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y upx-ucl
+          upx --version | head -1
+
       - name: Build dist and checksums
         run: make snapshot
 
       - name: Verify checksums
         run: cd dist && sha256sum -c checksums.txt
+
+      - name: Verify the linux artifacts are packed
+        run: |
+          for f in dist/kimi-ssh_*_linux_*; do
+            upx -t "$f" >/dev/null || { echo "::error::$f is not UPX-packed"; exit 1; }
+          done
 
       - name: Upload dist
         uses: actions/upload-artifact@v7
