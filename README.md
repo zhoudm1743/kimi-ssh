@@ -18,7 +18,7 @@
 ## 安装
 
 ```sh
-go install github.com/zhoudm1743/kimi-ssh@latest
+go install github.com/zhoudm1743/kimi-ssh@v1.2.0
 ```
 
 或从源码构建：
