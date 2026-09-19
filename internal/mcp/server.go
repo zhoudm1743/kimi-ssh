@@ -153,7 +153,7 @@ func (s *Server) handleInitialize(req Request) *Response {
 		},
 		"serverInfo": map[string]interface{}{
 			"name":    "kimi-ssh",
-			"version": "1.2.0",
+			"version": "1.2.1",
 		},
 	})
 }

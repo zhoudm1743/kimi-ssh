@@ -17,14 +17,31 @@
 
 ## 安装
 
+### 直接下载二进制（无需 Go 环境）
+
+到 [Releases](https://github.com/zhoudm1743/kimi-ssh/releases) 下载对应平台的文件：
+
 ```sh
-go install github.com/zhoudm1743/kimi-ssh@v1.2.0
+# 以 linux/amd64 为例
+curl -LO https://github.com/zhoudm1743/kimi-ssh/releases/latest/download/kimi-ssh_1.2.1_linux_amd64
+chmod +x kimi-ssh_1.2.1_linux_amd64
+mv kimi-ssh_1.2.1_linux_amd64 ~/.local/bin/kimi-ssh
 ```
 
-或从源码构建：
+提供 `linux/amd64`、`linux/arm64`、`darwin/amd64`、`darwin/arm64`、`windows/amd64`，
+每个 release 都带 `checksums.txt`，可用 `sha256sum -c checksums.txt` 校验。
+
+### 用 Go 安装
 
 ```sh
-make build   # 产出 ./kimi-ssh
+go install github.com/zhoudm1743/kimi-ssh@v1.2.1
+```
+
+### 从源码构建
+
+```sh
+make build      # 只构建本机平台
+make snapshot   # 交叉编译全部平台到 dist/，并生成 checksums.txt
 ```
 
 ## 配置
