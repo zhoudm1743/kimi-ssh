@@ -1,0 +1,19 @@
+{
+  "name": "kimi-ssh",
+  "version": "1.3.1",
+  "description": "SSH host manager MCP server: parse ~/.ssh/config, keep persistent connections, execute remote commands",
+  "keywords": ["ssh", "mcp", "remote-execution"],
+  "homepage": "https://github.com/zhoudm1743/kimi-ssh",
+  "license": "Apache-2.0",
+  "interface": {
+    "displayName": "Kimi SSH",
+    "shortDescription": "Manage SSH hosts from ~/.ssh/config and run commands over persistent MCP connections",
+    "developerName": "zhoudm1743",
+    "websiteURL": "https://github.com/zhoudm1743/kimi-ssh"
+  },
+  "mcpServers": {
+    "ssh-manager": {
+      "command": "kimi-ssh"
+    }
+  }
+}

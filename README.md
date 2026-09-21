@@ -23,9 +23,9 @@
 
 ```sh
 # 以 linux/amd64 为例
-curl -LO https://github.com/zhoudm1743/kimi-ssh/releases/latest/download/kimi-ssh_1.3.0_linux_amd64
-chmod +x kimi-ssh_1.3.0_linux_amd64
-mv kimi-ssh_1.3.0_linux_amd64 ~/.local/bin/kimi-ssh
+curl -LO https://github.com/zhoudm1743/kimi-ssh/releases/latest/download/kimi-ssh_1.3.1_linux_amd64
+chmod +x kimi-ssh_1.3.1_linux_amd64
+mv kimi-ssh_1.3.1_linux_amd64 ~/.local/bin/kimi-ssh
 ```
 
 提供 `linux/amd64`、`linux/arm64`、`darwin/amd64`、`darwin/arm64`、`windows/amd64`，
@@ -39,7 +39,7 @@ Windows 产物也未压缩。
 ### 用 Go 安装
 
 ```sh
-go install github.com/zhoudm1743/kimi-ssh@v1.2.2
+go install github.com/zhoudm1743/kimi-ssh@v1.3.1
 ```
 
 ### 从源码构建
@@ -63,8 +63,21 @@ Kimi Code 读取 `~/.kimi-code/mcp.json`（项目级为 `.kimi-code/mcp.json`）
 }
 ```
 
-也可以打包成 Kimi Code 插件：在 `kimi.plugin.json` 旁边放二进制，
-`mcpServers.<name>.command` 指向 `./bin/kimi-ssh` 即可。
+仓库根目录的 `kimi.plugin.json` 把它声明成了 Kimi Code 插件（MCP 服务器名为
+`ssh-manager`，`command` 从 `PATH` 里找 `kimi-ssh`），所以先把二进制装好
+（上面的下载或 `go install` 二选一，确保所在目录在 `PATH` 里），再安装插件：
+
+```sh
+# 在 Kimi Code 里执行
+/plugins install https://github.com/zhoudm1743/kimi-ssh
+/reload
+```
+
+也可以从本地目录安装（清单和二进制都在仓库里时即可用）：
+
+```sh
+/plugins install /path/to/kimi-ssh
+```
 
 ## SSH config 支持范围
 
